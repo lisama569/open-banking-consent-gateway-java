@@ -44,6 +44,42 @@ public class TokenController {
         resp.put("tokenId", token.getTokenId());
         resp.put("clientId", token.getClientId());
         resp.put("scopes", token.getScopes());
+        resp.put("consentBound", false);
+        resp.put("expiresAt", token.getExpiresAt().toString());
+        return ResponseEntity.ok(resp);
+    }
+
+    /**
+     * 以一条已被用户确认的授权换取访问凭证（授权绑定凭证）。
+     * 认证失败返回 401；授权不可用/范围越界返回 403 + 可区分原因；成功返回的 token
+     * 会携带 consentId/consentVersion，且同一授权重复换取返回同一份凭证。
+     */
+    @PostMapping("/consent-exchange")
+    public ResponseEntity<Map<String, Object>> exchange(@RequestBody Map<String, Object> body) {
+        String clientId = (String) body.get("clientId");
+        String secret = (String) body.get("secret");
+        String consentId = (String) body.get("consentId");
+        @SuppressWarnings("unchecked")
+        List<String> scopes = (List<String>) body.getOrDefault("scopes", List.of());
+        long ttlSeconds = ((Number) body.getOrDefault("ttlSeconds", 3600)).longValue();
+
+        TokenRejectionReason authFailure = partnerService.authenticate(clientId, secret);
+        if (authFailure != null) {
+            return ResponseEntity.status(401).body(Map.of("error", authFailure.name()));
+        }
+        TokenValidationResult result = tokenService.exchangeForConsent(clientId, consentId,
+                Set.copyOf(scopes), Duration.ofSeconds(ttlSeconds));
+        if (!result.valid()) {
+            return ResponseEntity.status(403).body(Map.of("valid", false, "reason", result.reason().name()));
+        }
+        AccessToken token = result.token();
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("tokenId", token.getTokenId());
+        resp.put("clientId", token.getClientId());
+        resp.put("scopes", token.getScopes());
+        resp.put("consentBound", true);
+        resp.put("consentId", token.getConsentId());
+        resp.put("consentVersion", token.getConsentVersion());
         resp.put("expiresAt", token.getExpiresAt().toString());
         return ResponseEntity.ok(resp);
     }

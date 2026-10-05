@@ -2,6 +2,8 @@ package com.github.lisama569.openbankingconsentgatewayjava.api;
 
 import com.github.lisama569.openbankingconsentgatewayjava.domain.Consent;
 import com.github.lisama569.openbankingconsentgatewayjava.service.ConsentService;
+import com.github.lisama569.openbankingconsentgatewayjava.service.NotificationRejectedException;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -41,6 +43,8 @@ public class ConsentController {
             return ResponseEntity.ok(toView(consentService.authorize(consentId)));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("error", "UNKNOWN_CONSENT", "consentId", consentId));
+        } catch (NotificationRejectedException e) {
+            return backlogFull(consentId, e);
         }
     }
 
@@ -55,6 +59,8 @@ public class ConsentController {
             return ResponseEntity.ok(toView(consentService.changeScopes(consentId, Set.copyOf(scopes), Duration.ofSeconds(ttlSeconds))));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("error", "UNKNOWN_CONSENT", "consentId", consentId));
+        } catch (NotificationRejectedException e) {
+            return backlogFull(consentId, e);
         }
     }
 
@@ -64,6 +70,8 @@ public class ConsentController {
             return ResponseEntity.ok(toView(consentService.revoke(consentId)));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("error", "UNKNOWN_CONSENT", "consentId", consentId));
+        } catch (NotificationRejectedException e) {
+            return backlogFull(consentId, e);
         }
     }
 
@@ -72,6 +80,14 @@ public class ConsentController {
         return consentService.find(consentId)
                 .map(c -> ResponseEntity.ok(toView(c)))
                 .orElseGet(() -> ResponseEntity.status(404).body(Map.of("error", "UNKNOWN_CONSENT", "consentId", consentId)));
+    }
+
+    private ResponseEntity<Map<String, Object>> backlogFull(String consentId, NotificationRejectedException e) {
+        // 与投递失败（FAILED）、限流（RATE_LIMITED）严格区分的独立拒绝原因
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of(
+                "error", e.getReason().name(),
+                "consentId", consentId,
+                "message", e.getMessage() == null ? "" : e.getMessage()));
     }
 
     private Map<String, Object> toView(Consent c) {

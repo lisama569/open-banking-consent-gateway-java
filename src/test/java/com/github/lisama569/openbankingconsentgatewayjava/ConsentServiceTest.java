@@ -4,6 +4,7 @@ import com.github.lisama569.openbankingconsentgatewayjava.domain.Consent;
 import com.github.lisama569.openbankingconsentgatewayjava.domain.ConsentEventType;
 import com.github.lisama569.openbankingconsentgatewayjava.domain.ConsentStatus;
 import com.github.lisama569.openbankingconsentgatewayjava.service.ConsentService;
+import com.github.lisama569.openbankingconsentgatewayjava.service.NotificationRejectedException;
 import com.github.lisama569.openbankingconsentgatewayjava.service.NotificationService;
 import com.github.lisama569.openbankingconsentgatewayjava.service.RateLimiter;
 import org.junit.jupiter.api.BeforeEach;
@@ -137,5 +138,40 @@ class ConsentServiceTest {
         for (int i = 1; i < events.size(); i++) {
             assertTrue(events.get(i).getSequence() > events.get(i - 1).getSequence(), "事件序号必须单调递增");
         }
+    }
+
+    @Test
+    void backlogFullRejectsStateChangeAtomically() {
+        // 每条授权积压上限 2：AUTHORIZED 之后还剩 1 个空位，制造一个额外未送达事件即可打满
+        notifications.setBacklogCapacity(2);
+        Consent consent = consents.createConsent("key-backlog", "client-a", "user-1",
+                Set.of("accounts:read"), Duration.ofDays(1));
+        consents.authorize(consent.getConsentId()); // 1 个未送达事件
+        consents.changeScopes(consent.getConsentId(),
+                Set.of("accounts:read", "payments:write"), Duration.ofDays(1)); // 第 2 个，积压满
+        // 此时授权回到 PENDING_CONFIRMATION，重新确认需要再发一个事件 -> 必须被 BACKLOG_FULL 挡下
+        NotificationRejectedException ex = assertThrows(NotificationRejectedException.class,
+                () -> consents.authorize(consent.getConsentId()));
+        log.info("[test] 判定: 积压满时 authorize 被拒 reason={}", ex.getReason());
+        assertEquals(NotificationRejectedException.Reason.BACKLOG_FULL, ex.getReason());
+
+        Consent unchanged = consents.find(consent.getConsentId()).orElseThrow();
+        log.info("[test] 判定: 被挡后 status={} version={}（不得前移为 AUTHORIZED）",
+                unchanged.getStatus(), unchanged.getVersion());
+        assertEquals(ConsentStatus.PENDING_CONFIRMATION, unchanged.getStatus(), "被挡下时状态不得变化");
+        assertEquals(1L, unchanged.getVersion());
+
+        // 撤销同样被挡，状态不得变成 REVOKED
+        NotificationRejectedException revokeEx = assertThrows(NotificationRejectedException.class,
+                () -> consents.revoke(consent.getConsentId()));
+        assertEquals(NotificationRejectedException.Reason.BACKLOG_FULL, revokeEx.getReason());
+        assertEquals(ConsentStatus.PENDING_CONFIRMATION,
+                consents.find(consent.getConsentId()).orElseThrow().getStatus());
+
+        // 已接收事件顺序与状态不被弄乱
+        var sequences = notifications.eventsFor(consent.getConsentId()).stream()
+                .map(e -> e.getType().name() + "#" + e.getSequence()).toList();
+        log.info("[test] 判定: 已接收事件={} pending={}", sequences, notifications.pendingCount(consent.getConsentId()));
+        assertEquals(2, notifications.eventsFor(consent.getConsentId()).size());
     }
 }

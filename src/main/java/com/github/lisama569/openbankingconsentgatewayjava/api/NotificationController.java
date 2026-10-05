@@ -19,12 +19,18 @@ public class NotificationController {
         this.notificationService = notificationService;
     }
 
-    /** 查询某授权的事件列表（按序号升序）。 */
+    /** 查询某授权的事件列表（按序号升序）及当前投递水位/积压深度。 */
     @GetMapping("/consents/{consentId}")
     public Map<String, Object> eventsFor(@PathVariable String consentId) {
         List<Map<String, Object>> events = notificationService.eventsFor(consentId).stream()
-                .map(NotificationController::toView).toList();
-        return Map.of("consentId", consentId, "events", events);
+                .map(e -> toView(e, notificationService.blockedBySequence(e))).toList();
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("consentId", consentId);
+        resp.put("deliveredUpToSequence", notificationService.deliveredUpToSequence(consentId));
+        resp.put("pendingCount", notificationService.pendingCount(consentId));
+        resp.put("backlogCapacity", notificationService.getBacklogCapacity());
+        resp.put("events", events);
+        return resp;
     }
 
     /** 触发一次投递尝试，结果区分 DELIVERED / RETRY_SCHEDULED / FAILED / RATE_LIMITED。 */
@@ -38,7 +44,7 @@ public class NotificationController {
         }
     }
 
-    private static Map<String, Object> toView(NotificationEvent e) {
+    private static Map<String, Object> toView(NotificationEvent e, long blockedBySequence) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("eventId", e.getEventId());
         view.put("type", e.getType().name());
@@ -46,6 +52,11 @@ public class NotificationController {
         view.put("consentVersion", e.getConsentVersion());
         view.put("status", e.getStatus().name());
         view.put("attempts", e.getAttempts());
+        // -1 表示当前未被前序挡住；否则为挡住它的最小前序序号
+        view.put("blockedBySequence", blockedBySequence);
+        if (e.getLastError() != null) {
+            view.put("lastError", e.getLastError());
+        }
         return view;
     }
 }
