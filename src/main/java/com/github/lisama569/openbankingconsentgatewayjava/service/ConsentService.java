@@ -79,10 +79,11 @@ public class ConsentService {
             expireIfNeeded(consent);
             switch (consent.getStatus()) {
                 case PENDING_CONFIRMATION -> {
-                    consent.setStatus(ConsentStatus.AUTHORIZED);
-                    log.info("[consent] authorize consentId={} version={} -> AUTHORIZED", consentId, consent.getVersion());
+                    // 先发布事件再变更状态：积压满时抛出 ConsentBacklogFullException，状态保持不变
                     notificationService.publish(consentId, consent.getClientId(),
                             ConsentEventType.CONSENT_AUTHORIZED, consent.getVersion());
+                    consent.setStatus(ConsentStatus.AUTHORIZED);
+                    log.info("[consent] authorize consentId={} version={} -> AUTHORIZED", consentId, consent.getVersion());
                 }
                 case AUTHORIZED -> log.info("[consent] authorize consentId={} 已 AUTHORIZED，幂等返回", consentId);
                 default -> log.info("[consent] authorize consentId={} 当前状态 {}，拒绝状态回退", consentId, consent.getStatus());
@@ -108,11 +109,12 @@ public class ConsentService {
                     newScopes, consent.getCreatedAt(), Instant.now(clock).plus(ttl));
             updated.setStatus(ConsentStatus.PENDING_CONFIRMATION);
             updated.setVersion(consent.getVersion() + 1);
+            // 先发布事件再替换记录：积压满时抛出异常，原授权记录与版本保持不变
+            notificationService.publish(consentId, updated.getClientId(),
+                    ConsentEventType.CONSENT_SCOPE_CHANGED, updated.getVersion());
             consents.put(consentId, updated);
             log.info("[consent] changeScopes consentId={} version {} -> {}, scopes={} -> {}, 需重新确认",
                     consentId, consent.getVersion(), updated.getVersion(), consent.getScopes(), newScopes);
-            notificationService.publish(consentId, updated.getClientId(),
-                    ConsentEventType.CONSENT_SCOPE_CHANGED, updated.getVersion());
             return updated;
         }
     }
@@ -130,10 +132,11 @@ public class ConsentService {
                 log.info("[consent] revoke consentId={} 已 EXPIRED，不回退为 REVOKED", consentId);
                 return consent;
             }
-            consent.setStatus(ConsentStatus.REVOKED);
-            log.info("[consent] revoke consentId={} version={} -> REVOKED", consentId, consent.getVersion());
+            // 先发布事件再变更状态：积压满时抛出异常，授权保持原状态
             notificationService.publish(consentId, consent.getClientId(),
                     ConsentEventType.CONSENT_REVOKED, consent.getVersion());
+            consent.setStatus(ConsentStatus.REVOKED);
+            log.info("[consent] revoke consentId={} version={} -> REVOKED", consentId, consent.getVersion());
             return consent;
         }
     }
@@ -156,8 +159,12 @@ public class ConsentService {
         if (!Instant.now(clock).isBefore(consent.getExpiresAt())) {
             consent.setStatus(ConsentStatus.EXPIRED);
             log.info("[consent] expire consentId={} version={} -> EXPIRED", consent.getConsentId(), consent.getVersion());
-            notificationService.publish(consent.getConsentId(), consent.getClientId(),
+            // 过期是系统级状态迁移，不被积压上限阻断；积压满时仅丢弃本次事件并告警
+            var result = notificationService.tryPublish(consent.getConsentId(), consent.getClientId(),
                     ConsentEventType.CONSENT_EXPIRED, consent.getVersion());
+            if (result.outcome() == NotificationService.PublishOutcome.BACKLOG_FULL) {
+                log.warn("[consent] expire consentId={} 积压已满，过期事件未入队（状态迁移仍生效）", consent.getConsentId());
+            }
         }
     }
 

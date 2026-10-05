@@ -27,6 +27,19 @@ public class NotificationController {
         return Map.of("consentId", consentId, "events", events);
     }
 
+    /** 查询某授权的投递进度：已送达到的序号、下一条可投递、因顺序被挡住的事件、积压占用。 */
+    @GetMapping("/consents/{consentId}/progress")
+    public Map<String, Object> progress(@PathVariable String consentId) {
+        NotificationService.ConsentDeliveryProgress p = notificationService.deliveryProgress(consentId);
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("consentId", consentId);
+        view.put("lastDeliveredSequence", p.lastDeliveredSequence());
+        view.put("nextDeliverableEventId", p.nextDeliverableEventId());
+        view.put("blockedEventIds", p.blockedEventIds());
+        view.put("undeliveredCount", p.undeliveredCount());
+        return view;
+    }
+
     /** 触发一次投递尝试，结果区分 DELIVERED / RETRY_SCHEDULED / FAILED / RATE_LIMITED。 */
     @PostMapping("/{eventId}/deliver")
     public ResponseEntity<Map<String, Object>> deliver(@PathVariable String eventId) {

@@ -1,6 +1,7 @@
 package com.github.lisama569.openbankingconsentgatewayjava.api;
 
 import com.github.lisama569.openbankingconsentgatewayjava.domain.Consent;
+import com.github.lisama569.openbankingconsentgatewayjava.service.ConsentBacklogFullException;
 import com.github.lisama569.openbankingconsentgatewayjava.service.ConsentService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -72,6 +73,15 @@ public class ConsentController {
         return consentService.find(consentId)
                 .map(c -> ResponseEntity.ok(toView(c)))
                 .orElseGet(() -> ResponseEntity.status(404).body(Map.of("error", "UNKNOWN_CONSENT", "consentId", consentId)));
+    }
+
+    /** 授权下通知积压达到容量上限：状态变更被挡下，返回独立可识别原因 BACKLOG_FULL。 */
+    @ExceptionHandler(ConsentBacklogFullException.class)
+    public ResponseEntity<Map<String, Object>> backlogFull(ConsentBacklogFullException e) {
+        return ResponseEntity.status(429).body(Map.of(
+                "error", "BACKLOG_FULL",
+                "consentId", e.getConsentId(),
+                "message", e.getMessage()));
     }
 
     private Map<String, Object> toView(Consent c) {
